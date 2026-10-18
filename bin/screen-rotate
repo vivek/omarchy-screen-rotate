@@ -1,0 +1,96 @@
+#!/bin/bash
+# screen-rotate: rotate a Hyprland monitor and optionally remember it.
+# Helper for the Screen Rotate Omarchy plugin (io.github.vivek.screen-rotate).
+#
+# Usage:
+#   screen-rotate list                  show monitors and their rotation
+#   screen-rotate get <monitor>         print "<transform> <saved>" (saved: 1 if rotations survive restarts)
+#   screen-rotate set <monitor> <0-3>   rotate now; also save it if `setup` has been run
+#   screen-rotate setup                 load saved rotations at login (adds one line to monitors.lua)
+#   screen-rotate forget                remove saved rotations and the monitors.lua line
+#
+# Transforms: 0 normal, 1 portrait turned right, 2 upside down, 3 portrait turned left
+
+set -euo pipefail
+
+hypr_dir="${XDG_CONFIG_HOME:-$HOME/.config}/hypr"
+saved="$hypr_dir/screen-rotate.lua"
+monitors="$hypr_dir/monitors.lua"
+require_line='pcall(require, "hypr.screen-rotate")'
+labels=("Normal" "Portrait, turned right" "Upside down" "Portrait, turned left")
+
+die() { echo "screen-rotate: $*" >&2; exit 1; }
+
+monitor_json() {
+  hyprctl monitors -j | jq -e --arg o "$1" '.[] | select(.name == $o)' 2>/dev/null \
+    || die "no active monitor named '$1' (see: screen-rotate list)"
+}
+
+is_setup() { grep -qF "$require_line" "$monitors" 2>/dev/null; }
+
+# hl.monitor(...) call for a monitor, keeping its live mode, position and scale
+monitor_call() {
+  jq -r --argjson t "$2" '
+    "hl.monitor({ output = \"\(.name)\", mode = \"\(.width)x\(.height)@\(.refreshRate * 100 | round / 100)\", position = \"\(.x)x\(.y)\", scale = \(.scale), transform = \($t) })"
+  ' <<<"$1"
+}
+
+save() {
+  local name=$1 call=$2 transform=$3 tmp
+  tmp=$(mktemp)
+  {
+    echo "-- Saved by the Screen Rotate plugin (io.github.vivek.screen-rotate)."
+    echo "-- Loaded from monitors.lua. Remove with: screen-rotate forget"
+    [[ -f $saved ]] && grep '^hl.monitor' "$saved" | grep -vF "output = \"$name\"" || true
+    (( transform != 0 )) && echo "$call" || true
+  } >"$tmp"
+  mv "$tmp" "$saved"
+}
+
+case "${1:-}" in
+  list)
+    hyprctl monitors -j | jq -r --argjson l "$(printf '%s\n' "${labels[@]}" | jq -R . | jq -s .)" \
+      '.[] | "\(.name)\t\($l[.transform % 4])\t\(.description)"'
+    ;;
+
+  get)
+    [[ -n ${2:-} ]] || die "usage: screen-rotate get <monitor>"
+    transform=$(monitor_json "$2" | jq -r '.transform')
+    is_setup && echo "$transform 1" || echo "$transform 0"
+    ;;
+
+  set)
+    [[ -n ${2:-} && ${3:-} =~ ^[0-3]$ ]] || die "usage: screen-rotate set <monitor> <0-3>"
+    call=$(monitor_call "$(monitor_json "$2")" "$3")
+    hyprctl eval "$call" >/dev/null
+    is_setup && save "$2" "$call" "$3"
+    echo "$2 -> ${labels[$3]}"
+    ;;
+
+  setup)
+    is_setup && { echo "Already set up: rotations are saved in $saved"; exit 0; }
+    [[ -f $monitors ]] || die "$monitors not found"
+    cp "$monitors" "$monitors.bak.$(date +%Y%m%d-%H%M%S)"
+    printf '\n-- Saved rotations from the Screen Rotate plugin (io.github.vivek.screen-rotate)\n%s\n' \
+      "$require_line" >>"$monitors"
+    # Save what's rotated right now so it survives the next restart
+    hyprctl monitors -j | jq -c '.[] | select(.transform != 0)' | while read -r m; do
+      save "$(jq -r .name <<<"$m")" "$(monitor_call "$m" "$(jq -r .transform <<<"$m")")" "$(jq -r .transform <<<"$m")"
+    done
+    echo "Rotations will now be remembered (saved in $saved)"
+    ;;
+
+  forget)
+    rm -f "$saved"
+    if is_setup; then
+      sed -i --follow-symlinks '/Saved rotations from the Screen Rotate plugin/d' "$monitors"
+      sed -i --follow-symlinks "\|^${require_line//./\\.}\$|d" "$monitors"
+    fi
+    echo "Saved rotations removed; monitors return to monitors.lua settings on next Hyprland restart"
+    ;;
+
+  *)
+    sed -n '3,12p' "$0" | sed 's/^# \{0,1\}//'
+    [[ -z ${1:-} || $1 == -h || $1 == --help ]] || exit 1
+    ;;
+esac

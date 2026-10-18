@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.vivek.screen-rotate",
+  "name": "Screen Rotate",
+  "version": "1.0.0",
+  "author": "Vivek Pandey",
+  "description": "One-click monitor rotation from the bar: pick Normal, Portrait or Upside down for the screen the bar is on",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Widget.qml"
+  },
+  "barWidget": {
+    "displayName": "Screen Rotate",
+    "description": "Rotate the screen this bar is on",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
